@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>법인카드 집근처 사용 분석</title>
+<link rel="stylesheet" href="css/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">법인카드 집근처 사용 분석</div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="data" class="active">1. 데이터 등록</button>
+    <button data-tab="dash">2. 대시보드</button>
+    <button data-tab="map">3. 지도 분석</button>
+    <button data-tab="list">4. 거래 내역</button>
+    <button data-tab="report">5. AI 보고서</button>
+    <button data-tab="settings">설정</button>
+  </nav>
+  <div class="status" id="kakaoStatus">카카오 지도: 미연결</div>
+</header>
+
+<main>
+  <!-- 1. 데이터 등록 -->
+  <section class="tab-panel active" id="tab-data">
+    <div class="grid2">
+      <div class="card">
+        <h2>법인카드 사용내역</h2>
+        <p class="hint">엑셀(.xlsx/.xls) 또는 CSV. 헤더 행에 <b>순번, 카드번호, 이용자명, 이용일, 가맹점명, 이용금액, 가맹점 주소 …</b> 컬럼이 있어야 합니다. 여러 파일을 올리면 합쳐집니다(승인번호 기준 중복 제거).</p>
+        <label class="file-btn">파일 선택<input type="file" id="cardFile" accept=".xlsx,.xls,.csv" multiple></label>
+        <button class="ghost" id="clearCards">내역 비우기</button>
+        <div id="cardSummary" class="summary"></div>
+      </div>
+      <div class="card">
+        <h2>직원 집주소</h2>
+        <p class="hint">이용자명과 집주소를 등록합니다. 동명이인은 카드번호 뒤 4자리로 구분하세요. 엑셀 업로드(컬럼: <b>이용자명, 집주소, 카드끝4자리</b>(선택)) 또는 직접 입력.</p>
+        <label class="file-btn">엑셀 업로드<input type="file" id="homeFile" accept=".xlsx,.xls,.csv"></label>
+        <button class="ghost" id="homeTemplate">양식 다운로드</button>
+        <button class="ghost" id="fillHomeNames">사용내역의 이용자명 불러오기</button>
+        <table class="tbl" id="homeTable">
+          <thead><tr><th>이용자명</th><th>카드끝4자리</th><th>집주소</th><th>좌표</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <button class="ghost" id="addHome">+ 행 추가</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>주소 좌표 변환 및 분석 실행</h2>
+      <p class="hint">카카오 지도 API로 집주소와 가맹점 주소를 좌표로 변환한 뒤 거리를 계산합니다. 한 번 변환한 주소는 브라우저에 캐시됩니다.</p>
+      <button class="primary" id="runGeocode">좌표 변환 + 분석 실행</button>
+      <span id="geoProgress" class="progress-text"></span>
+      <div class="progress"><div id="geoBar"></div></div>
+      <div id="geoFailures" class="summary"></div>
+    </div>
+  </section>
+
+  <!-- 2. 대시보드 -->
+  <div class="filters global" id="globalFilters" hidden>
+    <label>기간 <input type="date" id="fFrom"> ~ <input type="date" id="fTo"></label>
+    <label>집근처 반경 <select id="fRadius"></select></label>
+    <span class="hint" id="dashNote"></span>
+  </div>
+
+  <section class="tab-panel" id="tab-dash">
+    <div class="kpis" id="kpis"></div>
+    <div class="card table-card">
+      <h2>직원별 시나리오 현황</h2>
+      <table class="tbl sortable" id="empTable">
+        <thead>
+          <tr class="group-row">
+            <th colspan="3"></th><th colspan="3">① 집근처 사용</th><th colspan="2">② 휴일 사용</th><th colspan="2">③ 심야 사용</th><th colspan="2">점검대상(복합)</th><th></th>
+          </tr>
+          <tr>
+            <th data-k="name">이용자명</th><th data-k="cnt" class="num">총 건수</th><th data-k="amt" class="num">총 금액</th>
+            <th data-k="nearCnt" class="num">건수</th><th data-k="nearAmt" class="num">금액</th><th data-k="nearRatio" class="num">비중</th>
+            <th data-k="holCnt" class="num">건수</th><th data-k="holAmt" class="num">금액</th>
+            <th data-k="nightCnt" class="num">건수</th><th data-k="nightAmt" class="num">금액</th>
+            <th data-k="flagCnt" class="num">건수</th><th data-k="flagAmt" class="num">금액</th><th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="grid2">
+      <div class="card"><h2>집에서의 거리별 사용금액</h2><div class="bars" id="distChart"></div></div>
+      <div class="card"><h2>집근처 사용 업종 TOP 10 (금액)</h2><div class="bars" id="catChart"></div></div>
+    </div>
+    <div class="grid2">
+      <div class="card"><h2>요일별 사용금액 <span class="hint">· <i class="sw hl"></i>휴일</span></h2><div class="bars" id="dowChart"></div></div>
+      <div class="card"><h2>시간대별 사용금액 <span class="hint" id="hourNote"></span></h2><div class="cols" id="hourChart"></div></div>
+    </div>
+  </section>
+
+  <!-- 3. 지도 분석 -->
+  <section class="tab-panel" id="tab-map">
+    <div class="filters">
+      <label>이용자 <select id="mEmp"></select></label>
+      <label>표시 <select id="mShow">
+        <option value="all">전체 거래</option><option value="near">① 집근처 사용</option><option value="holiday">② 휴일 사용</option>
+        <option value="night">③ 심야 사용</option><option value="flag">점검대상(복합)</option>
+      </select></label>
+      <span class="legend">
+        <i class="dot home"></i>집 <i class="dot flag"></i>점검대상 <i class="dot near"></i>집근처 <i class="dot far"></i>기타
+      </span>
+    </div>
+    <div class="map-wrap">
+      <div id="map"><div class="map-placeholder">설정 탭에서 카카오 JavaScript 키를 입력하면 지도가 표시됩니다.</div></div>
+      <aside class="map-side">
+        <h3 id="mSideTitle">가맹점별 거래</h3>
+        <div id="mSideList"></div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- 4. 거래 내역 -->
+  <section class="tab-panel" id="tab-list">
+    <div class="filters">
+      <label>이용자 <select id="lEmp"></select></label>
+      <label>구분 <select id="lFilter">
+        <option value="all">전체</option><option value="near">① 집근처 사용</option><option value="holiday">② 휴일 사용</option>
+        <option value="night">③ 심야 사용</option><option value="flag">점검대상(복합)</option><option value="excluded">분석제외(온라인 등)</option><option value="fail">주소 변환 실패</option>
+      </select></label>
+      <label>검색 <input type="search" id="lSearch" placeholder="가맹점명/주소/업종"></label>
+      <button class="primary" id="exportXlsx">엑셀 내보내기</button>
+      <span class="hint" id="listCount"></span>
+    </div>
+    <div class="card scroll-x">
+      <table class="tbl sortable" id="txTable">
+        <thead><tr>
+          <th data-k="seq" class="num">순번</th><th data-k="user">이용자명</th><th data-k="dateStr">이용일</th><th data-k="time">승인시간</th>
+          <th data-k="merchant">가맹점명</th><th data-k="category">업종</th><th data-k="amount" class="num">이용금액</th>
+          <th data-k="address">가맹점 주소</th><th data-k="dist" class="num">집까지(km)</th><th data-k="reasons">점검사유</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 5. AI 보고서 -->
+  <section class="tab-panel" id="tab-report">
+    <div class="card no-print">
+      <div class="filters" style="margin-bottom:6px">
+        <label>대상 <select id="rEmp"></select></label>
+        <label><input type="checkbox" id="rMask" checked> 직원 이름 가명 처리 후 전송</label>
+        <button class="primary" id="rSummary">이상징후 요약</button>
+        <button class="primary" id="rExec">경영진 보고서 생성</button>
+        <button class="ghost" id="rStop" hidden>중지</button>
+        <button class="ghost" id="rHistoryBtn">저장된 보고서 (0)</button>
+        <span class="hint" id="rStatus"></span>
+      </div>
+      <div id="rHistoryPanel" class="history-panel" hidden>
+        <div class="hint" style="margin-bottom:6px">생성한 보고서는 이 브라우저에 최근 30건까지 자동 보관됩니다.</div>
+        <div id="rHistoryList"></div>
+      </div>
+      <label class="field" style="margin:0">추가 요청사항 (선택)
+        <input type="text" id="rExtra" placeholder="예: 3월 이후 변화에 집중해줘 / 개선 권고를 구체적으로 / 1페이지 분량으로">
+      </label>
+      <p class="hint" style="margin:6px 0 0">
+        상단 기간·반경 필터가 적용된 분석 결과(집계 수치와 주요 의심 거래 최대 60건)를 Gemini로 전송합니다.
+        <b>집주소·카드번호는 전송하지 않으며</b>, 가명 처리 시 이름은 '직원01' 형태로 보내고 응답을 받은 뒤 화면에서 실명으로 되돌립니다.
+      </p>
+    </div>
+    <div class="card no-print report-toolbar" id="rToolbar" hidden>
+      <button class="ghost" id="rCopy">복사 (서식 포함)</button>
+      <button class="ghost" id="rWord">Word로 저장</button>
+      <button class="ghost" id="rPrint">인쇄 / PDF</button>
+      <span class="hint">AI가 작성한 초안입니다. 수치는 하단 부록(시스템 산출값)과 대조 후 사용하세요.</span>
+    </div>
+    <article class="card report" id="reportOut">
+      <div class="hint">버튼을 누르면 이곳에 결과가 표시됩니다.</div>
+    </article>
+  </section>
+
+  <!-- 설정 -->
+  <section class="tab-panel" id="tab-settings">
+    <div class="grid2">
+      <div class="card">
+        <h2>카카오 지도 API</h2>
+        <label class="field">JavaScript 키 <input type="text" id="sKey" placeholder="카카오 디벨로퍼스 > 앱 > 앱 키 > JavaScript 키"></label>
+        <p class="hint">카카오 디벨로퍼스 &gt; 내 애플리케이션 &gt; 플랫폼 &gt; Web 사이트 도메인에 <code id="originHint"></code> 를 등록하고, 카카오맵 사용 설정을 ON 해야 합니다.</p>
+        <button class="primary" id="saveKey">저장 및 연결</button>
+        <button class="ghost" id="clearGeoCache">좌표 캐시 비우기</button>
+        <span class="hint" id="cacheInfo"></span>
+      </div>
+      <div class="card">
+        <h2>Gemini API (AI 보고서)</h2>
+        <label class="field">API 키 <input type="password" id="sGeminiKey" placeholder="Google AI Studio > Get API key" autocomplete="off"></label>
+        <label class="field">모델 <select id="sGeminiModel" style="display:block;width:100%;margin-top:4px">
+            <option value="">(키 저장 시 사용 가능한 모델을 불러옵니다)</option>
+          </select>
+        </label>
+        <label class="field">보고서 표기 조직명 (선택) <input type="text" id="sOrgName" placeholder="예: 재무팀"></label>
+        <p class="hint">키는 https://aistudio.google.com 에서 발급합니다. 이 브라우저에만 저장되며, 보고서 생성 시 Google 서버로 직접 전송됩니다.</p>
+        <button class="primary" id="saveGemini">저장 및 연결 테스트</button>
+        <span class="hint" id="geminiStatus"></span>
+      </div>
+      <div class="card">
+        <h2>분석 기준</h2>
+        <label class="field">집근처 반경(m) <input type="number" id="sRadius" min="100" step="100"></label>
+        <label class="field">심야 시간대 <span><input type="time" id="sNightFrom"> ~ <input type="time" id="sNightTo"></span></label>
+        <label class="field">주의 업종 키워드 (쉼표 구분)<textarea id="sRiskCats" rows="2"></textarea></label>
+        <label class="field">분석 제외 키워드 (온라인·PG 결제 등, 가맹점명/업종 포함 시 제외)<textarea id="sExclude" rows="2"></textarea></label>
+        <label class="field">공휴일 (YYYY-MM-DD, 쉼표/줄바꿈 구분)<textarea id="sHolidays" rows="4"></textarea></label>
+        <p class="hint">
+          <b>① 집근처 사용</b> = 집 반경 내 오프라인 가맹점 사용 (온라인·PG 결제 제외)<br>
+          <b>② 휴일 사용</b> = 토·일·공휴일 사용 (위치 무관, 온라인 포함)<br>
+          <b>③ 심야 사용</b> = 심야 시간대 승인 (위치 무관, 온라인 포함)<br>
+          <b>점검대상(복합)</b> = ① 이면서 (휴일 / 심야 / 주의 업종) 중 하나 이상 · 취소전표는 모두 제외</p>
+        <button class="primary" id="saveSettings">저장 후 재분석</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="tooltip" class="tooltip" hidden></div>
+
+<script src="js/util.js"></script>
+<script src="js/parser.js"></script>
+<script src="js/kakao.js"></script>
+<script src="js/analysis.js"></script>
+<script src="js/gemini.js"></script>
+<script src="js/app.js"></script>
+<script src="js/report.js"></script>
+</body>
+</html>
